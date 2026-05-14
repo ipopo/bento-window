@@ -32,18 +32,46 @@ If you only ever want to tile every window on the desktop, **use Window Layouts 
 
 ## Layouts
 
-| Windows | Grid |
-|---|---|
-| 1 | Fullscreen |
-| 2 | Left half + right half |
-| 3 | Two small on left + one big on right |
-| 4 | 2×2 |
-| 5 | 2×2 small on left + one big on right |
-| 6 | 3×2 |
-| 7 | 4×2 (one cell empty) |
-| 8 | 4×2 |
-| 9 | 3×3 |
-| 10+ | 5×2 (extras untouched) |
+The grid the extension picks based on the number of windows of the target app:
+
+```text
+1 window — fullscreen          2 windows — halves
+┌──────────────┐               ┌──────┬──────┐
+│              │               │      │      │
+│      1       │               │  1   │  2   │
+│              │               │      │      │
+└──────────────┘               └──────┴──────┘
+
+3 windows — small × 2 + big    4 windows — 2×2
+┌────┬─────────┐               ┌──────┬──────┐
+│ 1  │         │               │  1   │  2   │
+├────┤    3    │               ├──────┼──────┤
+│ 2  │         │               │  3   │  4   │
+└────┴─────────┘               └──────┴──────┘
+
+5 windows — 2×2 small + big    6 windows — 3×2
+┌───┬───┬────────┐             ┌────┬────┬────┐
+│ 1 │ 2 │        │             │ 1  │ 2  │ 3  │
+├───┼───┤   5    │             ├────┼────┼────┤
+│ 3 │ 4 │        │             │ 4  │ 5  │ 6  │
+└───┴───┴────────┘             └────┴────┴────┘
+
+7 windows — 4×2 (one empty)    8 windows — 4×2
+┌───┬───┬───┬───┐              ┌───┬───┬───┬───┐
+│ 1 │ 2 │ 3 │ 4 │              │ 1 │ 2 │ 3 │ 4 │
+├───┼───┼───┼───┤              ├───┼───┼───┼───┤
+│ 5 │ 6 │ 7 │   │              │ 5 │ 6 │ 7 │ 8 │
+└───┴───┴───┴───┘              └───┴───┴───┴───┘
+
+9 windows — 3×3                10+ windows — 5×2 (extras untouched)
+┌────┬────┬────┐               ┌──┬──┬──┬──┬──┐
+│ 1  │ 2  │ 3  │               │1 │2 │3 │4 │5 │
+├────┼────┼────┤               ├──┼──┼──┼──┼──┤
+│ 4  │ 5  │ 6  │               │6 │7 │8 │9 │10│
+├────┼────┼────┤               └──┴──┴──┴──┴──┘
+│ 7  │ 8  │ 9  │
+└────┴────┴────┘
+```
 
 ## Install (manual, before Store release)
 
