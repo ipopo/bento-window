@@ -29,10 +29,10 @@ function layoutFor(count: number): LayoutGrid {
         [3, 4],
       ];
     case 5:
-      // 左 2x2 四个小窗 + 右大 2x2
+      // 左 2x2 四个小窗 (各 1/3 宽) + 右 1 列大窗 (1/3 宽 全高)
       return [
-        [1, 2, 5, 5],
-        [3, 4, 5, 5],
+        [1, 2, 5],
+        [3, 4, 5],
       ];
     case 6:
       return [
