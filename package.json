@@ -4,7 +4,7 @@
   "title": "Bento Window",
   "description": "像便当盒一样把同一个 app 的多个窗口自动分格排布。按窗口数自适应：2x2、3x3、5x2 等，开几个窗口排几格。",
   "icon": "extension-icon.png",
-  "author": "ipopo",
+  "author": "Popo",
   "license": "MIT",
   "commands": [
     {

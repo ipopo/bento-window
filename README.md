@@ -1,4 +1,12 @@
-# Bento Window
+<p align="center">
+  <img src="assets/extension-icon.png" alt="Bento Window" width="160" height="160" />
+</p>
+
+<h1 align="center">Bento Window</h1>
+
+<p align="center">A Raycast extension that tiles a single app's windows into a bento-box grid.</p>
+
+---
 
 A Raycast extension that tiles **a single app's windows** into a bento-box grid with one keystroke. The grid auto-adapts to how many windows you have open — 4 windows become 2×2, 6 become 3×2, 9 become 3×3, and so on.
 
