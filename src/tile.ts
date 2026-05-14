@@ -5,11 +5,6 @@ import {
   Toast,
 } from "@raycast/api";
 
-interface Preferences {
-  appName: string;
-  gap: string;
-}
-
 // 2D 网格表示法：数字 = 窗口序号 (1-based)，0 = 空位，相同数字代表跨格
 // 例如 [[1,1,2],[1,1,3]] 表示窗口 1 占左 2x2，窗口 2 在右上，窗口 3 在右下
 type LayoutGrid = number[][];
@@ -124,7 +119,7 @@ function computeFrames(
 }
 
 export default async function Command() {
-  const prefs = getPreferenceValues<Preferences>();
+  const prefs = getPreferenceValues<Preferences.Tile>();
   const appNames = (prefs.appName || "")
     .split(",")
     .map((s) => s.trim())
@@ -133,7 +128,7 @@ export default async function Command() {
 
   const toast = await showToast({
     style: Toast.Style.Animated,
-    title: "排布窗口中…",
+    title: "Tiling windows…",
   });
 
   try {
@@ -153,7 +148,7 @@ export default async function Command() {
 
     if (filterNames.length === 0) {
       toast.style = Toast.Style.Failure;
-      toast.title = "无法确定目标 app（无活跃窗口）";
+      toast.title = "No focused window to detect target app";
       return;
     }
 
@@ -173,7 +168,7 @@ export default async function Command() {
 
     if (targets.length === 0) {
       toast.style = Toast.Style.Failure;
-      toast.title = `没找到可排布的窗口（已查：${filterNames.join(", ")}）`;
+      toast.title = `No tileable windows found (looked for: ${filterNames.join(", ")})`;
       return;
     }
 
@@ -181,7 +176,7 @@ export default async function Command() {
     const desktop = desktops.find((d) => d.id === desktopId);
     if (!desktop) {
       toast.style = Toast.Style.Failure;
-      toast.title = "无法获取桌面尺寸";
+      toast.title = "Could not read desktop size";
       return;
     }
 
@@ -204,10 +199,10 @@ export default async function Command() {
     );
 
     toast.style = Toast.Style.Success;
-    toast.title = `已排布 ${targets.length} 个 ${chosenApp} 窗口`;
+    toast.title = `Tiled ${targets.length} ${chosenApp} window${targets.length === 1 ? "" : "s"}`;
   } catch (error) {
     toast.style = Toast.Style.Failure;
-    toast.title = "排布失败";
+    toast.title = "Failed to tile windows";
     toast.message = error instanceof Error ? error.message : String(error);
   }
 }

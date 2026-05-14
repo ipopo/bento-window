@@ -2,29 +2,30 @@
   "$schema": "https://www.raycast.com/schemas/extension.json",
   "name": "bento-window",
   "title": "Bento Window",
-  "description": "像便当盒一样把同一个 app 的多个窗口自动分格排布。按窗口数自适应：2x2、3x3、5x2 等，开几个窗口排几格。",
+  "description": "Tile multiple windows of the same app into a bento-box grid. The grid auto-adapts to the window count (2×2, 3×3, 5×2, etc.).",
   "icon": "extension-icon.png",
   "author": "Popo",
+  "categories": ["Productivity", "System"],
   "license": "MIT",
   "commands": [
     {
       "name": "tile",
       "title": "Bento Tile",
-      "description": "按窗口数自动分格排布当前 app 的窗口（留空则用当前活跃窗口所属 app）",
+      "description": "Tile all windows of the target app into a grid that auto-adapts to the window count. Leave the preference empty to target the focused window's app.",
       "mode": "no-view",
       "preferences": [
         {
           "name": "appName",
-          "title": "目标应用名（逗号分隔）",
-          "description": "例：Ghostty, Terminal, iTerm2。留空 = 自动识别当前活跃窗口所属 app",
+          "title": "Target App Names (Comma-Separated)",
+          "description": "Apps to tile, tried in order. Example: Ghostty, Terminal, iTerm2. Leave empty to auto-detect from the focused window.",
           "type": "textfield",
           "required": false,
           "default": "Ghostty, Terminal, iTerm2, Alacritty, WezTerm"
         },
         {
           "name": "gap",
-          "title": "窗口间距 (px)",
-          "description": "窗口之间和屏幕边缘的间距，0 表示无缝紧贴",
+          "title": "Window Gap (px)",
+          "description": "Spacing between tiles and screen edges. 0 means flush tiles (default).",
           "type": "textfield",
           "required": false,
           "default": "0"

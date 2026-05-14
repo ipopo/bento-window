@@ -15,9 +15,9 @@ declare type Preferences = ExtensionPreferences
 declare namespace Preferences {
   /** Preferences accessible in the `tile` command */
   export type Tile = ExtensionPreferences & {
-  /** 目标应用名（逗号分隔） - 例：Ghostty, Terminal, iTerm2。留空 = 自动识别当前活跃窗口所属 app */
+  /** Target App Names (Comma-Separated) - Apps to tile, tried in order. Example: Ghostty, Terminal, iTerm2. Leave empty to auto-detect from the focused window. */
   "appName": string,
-  /** 窗口间距 (px) - 窗口之间和屏幕边缘的间距，0 表示无缝紧贴 */
+  /** Window Gap (px) - Spacing between tiles and screen edges. 0 means flush tiles (default). */
   "gap": string
 }
 }
