@@ -6,6 +6,12 @@
 
 <p align="center">A Raycast extension that tiles a single app's windows into a bento-box grid.</p>
 
+<p align="center">
+  <a href="https://github.com/raycast/extensions/pull/27877"><img src="https://img.shields.io/badge/Raycast_Store-pending_review-yellow?style=flat-square" alt="Raycast Store: pending review" /></a>
+  <a href="https://github.com/ipopo/bento-window/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" /></a>
+  <img src="https://img.shields.io/badge/platform-macOS-lightgrey?style=flat-square" alt="macOS" />
+</p>
+
 ---
 
 A Raycast extension that tiles **a single app's windows** into a bento-box grid with one keystroke. The grid auto-adapts to how many windows you have open — 4 windows become 2×2, 6 become 3×2, 9 become 3×3, and so on.
