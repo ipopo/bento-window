@@ -1,12 +1,10 @@
-import {
-  WindowManagement,
-  getPreferenceValues,
-  showToast,
-  Toast,
-} from "@raycast/api";
+import { getPreferenceValues, showToast, Toast } from "@raycast/api";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 // 2D 网格表示法：数字 = 窗口序号 (1-based)，0 = 空位，相同数字代表跨格
-// 例如 [[1,1,2],[1,1,3]] 表示窗口 1 占左 2x2，窗口 2 在右上，窗口 3 在右下
 type LayoutGrid = number[][];
 
 const MAX_WINDOWS = 10;
@@ -18,7 +16,6 @@ function layoutFor(count: number): LayoutGrid {
     case 2:
       return [[1, 2]];
     case 3:
-      // 左 2 小 + 右 1 大占满右半屏
       return [
         [1, 3],
         [2, 3],
@@ -29,7 +26,6 @@ function layoutFor(count: number): LayoutGrid {
         [3, 4],
       ];
     case 5:
-      // 左 2x2 四个小窗 (各 1/3 宽) + 右 1 列大窗 (1/3 宽 全高)
       return [
         [1, 2, 5],
         [3, 4, 5],
@@ -40,7 +36,6 @@ function layoutFor(count: number): LayoutGrid {
         [4, 5, 6],
       ];
     case 7:
-      // 4x2 缺右下角一格
       return [
         [1, 2, 3, 4],
         [5, 6, 7, 0],
@@ -51,14 +46,12 @@ function layoutFor(count: number): LayoutGrid {
         [5, 6, 7, 8],
       ];
     case 9:
-      // 3x3
       return [
         [1, 2, 3],
         [4, 5, 6],
         [7, 8, 9],
       ];
     default:
-      // 10 个及以上：5x2
       return [
         [1, 2, 3, 4, 5],
         [6, 7, 8, 9, 10],
@@ -84,7 +77,6 @@ function computeFrames(
   const cellW = (screen.width - gap * (cols + 1)) / cols;
   const cellH = (screen.height - gap * (rows + 1)) / rows;
 
-  // 求每个窗口编号在网格里的外接矩形
   const extents: Record<
     number,
     { minC: number; maxC: number; minR: number; maxR: number }
@@ -118,6 +110,144 @@ function computeFrames(
   });
 }
 
+// 转义 AppleScript 字符串字面量中的反斜杠和双引号
+function escAS(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+async function osa(script: string): Promise<string> {
+  const { stdout } = await execFileAsync("/usr/bin/osascript", ["-e", script]);
+  return stdout.trim();
+}
+
+async function jxa(script: string): Promise<string> {
+  const { stdout } = await execFileAsync("/usr/bin/osascript", [
+    "-l",
+    "JavaScript",
+    "-e",
+    script,
+  ]);
+  return stdout.trim();
+}
+
+async function getFrontmostAppName(): Promise<string | null> {
+  try {
+    const out = await osa(
+      'tell application "System Events" to get name of first application process whose frontmost is true',
+    );
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
+// 统计指定 app 当前非最小化的窗口数；进程不存在或全部最小化返回 0
+async function countVisibleWindows(appName: string): Promise<number> {
+  const script = `
+tell application "System Events"
+  if not (exists application process "${escAS(appName)}") then return "0"
+  tell application process "${escAS(appName)}"
+    set c to 0
+    repeat with w in windows
+      try
+        if (value of attribute "AXMinimized" of w) is false then
+          set c to c + 1
+        end if
+      on error
+        set c to c + 1
+      end try
+    end repeat
+    return (c as string)
+  end tell
+end tell`;
+  try {
+    const out = await osa(script);
+    return Number.parseInt(out, 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+// 屏幕可用区（已去掉菜单栏和 Dock），坐标转成 AX 系（左上为原点，Y 向下）
+// 选鼠标当前所在的那块屏；找不到就回退到 mainScreen
+async function getScreenVisibleFrameAX(): Promise<{
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}> {
+  const script = `
+ObjC.import('AppKit');
+var mouseLoc = $.NSEvent.mouseLocation;
+var screens = $.NSScreen.screens;
+var n = screens.count;
+var target;
+for (var i = 0; i < n; i++) {
+  var s = screens.objectAtIndex(i);
+  var f = s.frame;
+  if (mouseLoc.x >= f.origin.x && mouseLoc.x < f.origin.x + f.size.width &&
+      mouseLoc.y >= f.origin.y && mouseLoc.y < f.origin.y + f.size.height) {
+    target = s;
+    break;
+  }
+}
+if (!target) target = $.NSScreen.mainScreen;
+
+// AX 坐标原点是主屏（screens[0]）左上角；Cocoa 是主屏左下角，Y 向上
+var primaryHeight = screens.objectAtIndex(0).frame.size.height;
+var vis = target.visibleFrame;
+JSON.stringify({
+  x: vis.origin.x,
+  y: primaryHeight - (vis.origin.y + vis.size.height),
+  width: vis.size.width,
+  height: vis.size.height
+});`;
+  const out = await jxa(script);
+  return JSON.parse(out);
+}
+
+// 把所有目标 frame 在一次 osascript 调用里批量写入，减少 spawn 开销
+async function applyFramesViaOSA(
+  appName: string,
+  frames: Frame[],
+): Promise<void> {
+  if (frames.length === 0) return;
+  const sorted = [...frames].sort((a, b) => a.windowIndex - b.windowIndex);
+  const setBlocks = sorted
+    .map((f) => {
+      const idx = f.windowIndex + 1;
+      // 跨屏移动时 macOS 可能先把 position 钳在原屏内，所以 position 写两次：
+      // 第一次让窗口跨过去，set size 后再写一次确保落点正确
+      return `if (count of visibles) >= ${idx} then
+      try
+        set position of (item ${idx} of visibles) to {${f.x}, ${f.y}}
+        set size of (item ${idx} of visibles) to {${f.width}, ${f.height}}
+        set position of (item ${idx} of visibles) to {${f.x}, ${f.y}}
+      end try
+    end if`;
+    })
+    .join("\n    ");
+
+  const script = `
+tell application "System Events"
+  if not (exists application process "${escAS(appName)}") then return ""
+  tell application process "${escAS(appName)}"
+    set visibles to {}
+    repeat with w in windows
+      try
+        if (value of attribute "AXMinimized" of w) is false then
+          set end of visibles to w
+        end if
+      on error
+        set end of visibles to w
+      end try
+    end repeat
+    ${setBlocks}
+  end tell
+end tell`;
+  await osa(script);
+}
+
 export default async function Command() {
   const prefs = getPreferenceValues<Preferences.Tile>();
   const appNames = (prefs.appName || "")
@@ -132,74 +262,57 @@ export default async function Command() {
   });
 
   try {
-    const [windows, desktops, activeWindow] = await Promise.all([
-      WindowManagement.getWindowsOnActiveDesktop(),
-      WindowManagement.getDesktops(),
-      WindowManagement.getActiveWindow().catch(() => null),
-    ]);
-
-    // 留空 = 用当前活跃窗口所属 app
-    const filterNames =
-      appNames.length > 0
-        ? appNames
-        : activeWindow?.application?.name
-          ? [activeWindow.application.name]
-          : [];
-
+    // 1) 候选 app 名列表：偏好留空则取当前前台 app
+    let filterNames = appNames;
+    if (filterNames.length === 0) {
+      const front = await getFrontmostAppName();
+      filterNames = front ? [front] : [];
+    }
     if (filterNames.length === 0) {
       toast.style = Toast.Style.Failure;
       toast.title = "No focused window to detect target app";
       return;
     }
 
-    // 选第一个有窗口的 app 进行排布（优先列表顺序）
-    let targets: typeof windows = [];
+    // 2) 按列表顺序选第一个有可见窗口的 app
     let chosenApp = "";
+    let count = 0;
     for (const name of filterNames) {
-      const matched = windows.filter(
-        (w) => w.application?.name === name && w.positionable && w.resizable,
-      );
-      if (matched.length > 0) {
-        targets = matched.slice(0, MAX_WINDOWS);
+      const c = await countVisibleWindows(name);
+      if (c > 0) {
         chosenApp = name;
+        count = Math.min(c, MAX_WINDOWS);
         break;
       }
     }
-
-    if (targets.length === 0) {
+    if (count === 0) {
       toast.style = Toast.Style.Failure;
       toast.title = `No tileable windows found (looked for: ${filterNames.join(", ")})`;
       return;
     }
 
-    const desktopId = targets[0].desktopId;
-    const desktop = desktops.find((d) => d.id === desktopId);
-    if (!desktop) {
-      toast.style = Toast.Style.Failure;
-      toast.title = "Could not read desktop size";
-      return;
-    }
+    // 3) 拿屏幕可用区（已扣菜单栏 / Dock）
+    const visible = await getScreenVisibleFrameAX();
 
-    const grid = layoutFor(targets.length);
-    const frames = computeFrames(grid, desktop.size, gap);
+    // 4) 算出每个窗口在可用区内的相对位置，再平移到屏幕绝对坐标
+    const grid = layoutFor(count);
+    const frames = computeFrames(
+      grid,
+      { width: visible.width, height: visible.height },
+      gap,
+    )
+      .filter((f) => f.windowIndex < count)
+      .map((f) => ({
+        ...f,
+        x: f.x + visible.x,
+        y: f.y + visible.y,
+      }));
 
-    await Promise.all(
-      frames
-        .filter((f) => f.windowIndex < targets.length)
-        .map((f) =>
-          WindowManagement.setWindowBounds({
-            id: targets[f.windowIndex].id,
-            desktopId,
-            bounds: {
-              position: { x: f.x, y: f.y },
-              size: { width: f.width, height: f.height },
-            },
-          }),
-        ),
-    );
+    // 5) 一次性写入所有窗口
+    await applyFramesViaOSA(chosenApp, frames);
 
     toast.style = Toast.Style.Success;
-    toast.title = `Tiled ${targets.length} ${chosenApp} window${targets.length === 1 ? "" : "s"}`;
+    toast.title = `Tiled ${count} ${chosenApp} window${count === 1 ? "" : "s"}`;
   } catch (error) {
     toast.style = Toast.Style.Failure;
     toast.title = "Failed to tile windows";
