@@ -4,7 +4,6 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-// 2D 网格表示法：数字 = 窗口序号 (1-based)，0 = 空位，相同数字代表跨格
 type LayoutGrid = number[][];
 
 const MAX_WINDOWS = 10;
@@ -38,7 +37,7 @@ function layoutFor(count: number): LayoutGrid {
     case 7:
       return [
         [1, 2, 3, 4],
-        [5, 6, 7, 0],
+        [5, 6, 7, 7],
       ];
     case 8:
       return [
@@ -67,20 +66,13 @@ interface Frame {
   height: number;
 }
 
-function computeFrames(
-  grid: LayoutGrid,
-  screen: { width: number; height: number },
-  gap: number,
-): Frame[] {
+function computeFrames(grid: LayoutGrid, screen: { width: number; height: number }, gap: number): Frame[] {
   const rows = grid.length;
   const cols = grid[0].length;
   const cellW = (screen.width - gap * (cols + 1)) / cols;
   const cellH = (screen.height - gap * (rows + 1)) / rows;
 
-  const extents: Record<
-    number,
-    { minC: number; maxC: number; minR: number; maxR: number }
-  > = {};
+  const extents: Record<number, { minC: number; maxC: number; minR: number; maxR: number }> = {};
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const n = grid[r][c];
@@ -110,114 +102,122 @@ function computeFrames(
   });
 }
 
-// 转义 AppleScript 字符串字面量中的反斜杠和双引号
-function escAS(s: string): string {
-  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+interface ScanResult {
+  chosenApp: string;
+  pids: number[];
+  count: number;
+  screen: { x: number; y: number; width: number; height: number };
 }
 
-async function osa(script: string): Promise<string> {
-  const { stdout } = await execFileAsync("/usr/bin/osascript", ["-e", script]);
-  return stdout.trim();
+// 一次 JXA 调用完成所有读取：前台 app、候选 app 的 PID 和窗口数、屏幕可用区
+async function scanAll(candidates: string[]): Promise<ScanResult | null> {
+  const script = `
+ObjC.import('AppKit');
+var se = Application('System Events');
+var ws = $.NSWorkspace.sharedWorkspace;
+
+var frontApp = '';
+try { frontApp = ws.frontmostApplication.localizedName.js; } catch(e) {}
+
+var candidates = ${JSON.stringify(candidates)};
+if (candidates.length === 0 && frontApp) candidates = [frontApp];
+
+var chosen = null;
+var allApps = ws.runningApplications;
+for (var ci = 0; ci < candidates.length; ci++) {
+  var target = candidates[ci].toLowerCase();
+  var pids = [];
+  for (var i = 0; i < allApps.count; i++) {
+    var a = allApps.objectAtIndex(i);
+    var n = a.localizedName ? a.localizedName.js : '';
+    if (n.toLowerCase() === target) pids.push(a.processIdentifier);
+  }
+  if (pids.length === 0) continue;
+  var vc = 0;
+  for (var pi = 0; pi < pids.length; pi++) {
+    try {
+      var proc = se.applicationProcesses.whose({unixId: pids[pi]})[0];
+      var wins = proc.windows();
+      for (var j = 0; j < wins.length; j++) {
+        try { if (!wins[j].attributes.byName('AXMinimized').value()) vc++; }
+        catch(e) { vc++; }
+      }
+    } catch(e) {}
+  }
+  if (vc > 0) {
+    chosen = {name: candidates[ci], pids: pids, count: Math.min(vc, ${MAX_WINDOWS})};
+    break;
+  }
 }
 
-async function jxa(script: string): Promise<string> {
-  const { stdout } = await execFileAsync("/usr/bin/osascript", [
-    "-l",
-    "JavaScript",
-    "-e",
-    script,
-  ]);
-  return stdout.trim();
-}
+if (!chosen) { JSON.stringify(null); } else {
+  var mouseLoc = $.NSEvent.mouseLocation;
+  var screens = $.NSScreen.screens;
+  var tgt;
+  for (var si = 0; si < screens.count; si++) {
+    var s = screens.objectAtIndex(si);
+    var f = s.frame;
+    if (mouseLoc.x >= f.origin.x && mouseLoc.x < f.origin.x + f.size.width &&
+        mouseLoc.y >= f.origin.y && mouseLoc.y < f.origin.y + f.size.height) {
+      tgt = s; break;
+    }
+  }
+  if (!tgt) tgt = $.NSScreen.mainScreen;
 
-async function getFrontmostAppName(): Promise<string | null> {
+  var ps = screens.objectAtIndex(0);
+  var pH = ps.frame.size.height;
+  var vis = tgt.visibleFrame;
+  var frm = tgt.frame;
+  var pf = ps.frame; var pv = ps.visibleFrame;
+  var pmb = (pf.origin.y + pf.size.height) - (pv.origin.y + pv.size.height);
+  var vt = vis.origin.y + vis.size.height;
+  var ft = frm.origin.y + frm.size.height;
+  var mb = (pmb > 0 && Math.abs(vt - ft) < 1) ? pmb : 0;
+
+  JSON.stringify({
+    chosenApp: chosen.name, pids: chosen.pids, count: chosen.count,
+    screen: {
+      x: vis.origin.x,
+      y: pH - (vis.origin.y + vis.size.height) + mb,
+      width: vis.size.width,
+      height: vis.size.height - mb
+    }
+  });
+}`;
   try {
-    const out = await osa(
-      'tell application "System Events" to get name of first application process whose frontmost is true',
-    );
-    return out || null;
+    const { stdout } = await execFileAsync("/usr/bin/osascript", ["-l", "JavaScript", "-e", script]);
+    const parsed = JSON.parse(stdout.trim());
+    return parsed as ScanResult | null;
   } catch {
     return null;
   }
 }
 
-// 统计指定 app 当前非最小化的窗口数；进程不存在或全部最小化返回 0
-async function countVisibleWindows(appName: string): Promise<number> {
-  const script = `
-tell application "System Events"
-  if not (exists application process "${escAS(appName)}") then return "0"
-  tell application process "${escAS(appName)}"
-    set c to 0
-    repeat with w in windows
-      try
-        if (value of attribute "AXMinimized" of w) is false then
-          set c to c + 1
-        end if
-      on error
-        set c to c + 1
-      end try
-    end repeat
-    return (c as string)
-  end tell
-end tell`;
-  try {
-    const out = await osa(script);
-    return Number.parseInt(out, 10) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-// 屏幕可用区（已去掉菜单栏和 Dock），坐标转成 AX 系（左上为原点，Y 向下）
-// 选鼠标当前所在的那块屏；找不到就回退到 mainScreen
-async function getScreenVisibleFrameAX(): Promise<{
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}> {
-  const script = `
-ObjC.import('AppKit');
-var mouseLoc = $.NSEvent.mouseLocation;
-var screens = $.NSScreen.screens;
-var n = screens.count;
-var target;
-for (var i = 0; i < n; i++) {
-  var s = screens.objectAtIndex(i);
-  var f = s.frame;
-  if (mouseLoc.x >= f.origin.x && mouseLoc.x < f.origin.x + f.size.width &&
-      mouseLoc.y >= f.origin.y && mouseLoc.y < f.origin.y + f.size.height) {
-    target = s;
-    break;
-  }
-}
-if (!target) target = $.NSScreen.mainScreen;
-
-// AX 坐标原点是主屏（screens[0]）左上角；Cocoa 是主屏左下角，Y 向上
-var primaryHeight = screens.objectAtIndex(0).frame.size.height;
-var vis = target.visibleFrame;
-JSON.stringify({
-  x: vis.origin.x,
-  y: primaryHeight - (vis.origin.y + vis.size.height),
-  width: vis.size.width,
-  height: vis.size.height
-});`;
-  const out = await jxa(script);
-  return JSON.parse(out);
-}
-
-// 把所有目标 frame 在一次 osascript 调用里批量写入，减少 spawn 开销
-async function applyFramesViaOSA(
-  appName: string,
-  frames: Frame[],
-): Promise<void> {
+// 一次 AppleScript 调用完成所有窗口位置写入
+async function applyFrames(pids: number[], frames: Frame[]): Promise<void> {
   if (frames.length === 0) return;
   const sorted = [...frames].sort((a, b) => a.windowIndex - b.windowIndex);
+
+  const collectBlocks = pids
+    .map(
+      (pid) => `
+    try
+      tell (first application process whose unix id is ${pid})
+        repeat with w in windows
+          try
+            if (value of attribute "AXMinimized" of w) is false then set end of visibles to w
+          on error
+            set end of visibles to w
+          end try
+        end repeat
+      end tell
+    end try`,
+    )
+    .join("\n");
+
   const setBlocks = sorted
     .map((f) => {
       const idx = f.windowIndex + 1;
-      // 跨屏移动时 macOS 可能先把 position 钳在原屏内，所以 position 写两次：
-      // 第一次让窗口跨过去，set size 后再写一次确保落点正确
       return `if (count of visibles) >= ${idx} then
       try
         set position of (item ${idx} of visibles) to {${f.x}, ${f.y}}
@@ -230,22 +230,11 @@ async function applyFramesViaOSA(
 
   const script = `
 tell application "System Events"
-  if not (exists application process "${escAS(appName)}") then return ""
-  tell application process "${escAS(appName)}"
-    set visibles to {}
-    repeat with w in windows
-      try
-        if (value of attribute "AXMinimized" of w) is false then
-          set end of visibles to w
-        end if
-      on error
-        set end of visibles to w
-      end try
-    end repeat
-    ${setBlocks}
-  end tell
+  set visibles to {}
+${collectBlocks}
+  ${setBlocks}
 end tell`;
-  await osa(script);
+  await execFileAsync("/usr/bin/osascript", ["-e", script]);
 }
 
 export default async function Command() {
@@ -262,57 +251,26 @@ export default async function Command() {
   });
 
   try {
-    // 1) 候选 app 名列表：偏好留空则取当前前台 app
-    let filterNames = appNames;
-    if (filterNames.length === 0) {
-      const front = await getFrontmostAppName();
-      filterNames = front ? [front] : [];
-    }
-    if (filterNames.length === 0) {
+    const scan = await scanAll(appNames);
+
+    if (!scan) {
       toast.style = Toast.Style.Failure;
-      toast.title = "No focused window to detect target app";
+      toast.title =
+        appNames.length > 0
+          ? `No tileable windows found (looked for: ${appNames.join(", ")})`
+          : "No focused window to detect target app";
       return;
     }
 
-    // 2) 按列表顺序选第一个有可见窗口的 app
-    let chosenApp = "";
-    let count = 0;
-    for (const name of filterNames) {
-      const c = await countVisibleWindows(name);
-      if (c > 0) {
-        chosenApp = name;
-        count = Math.min(c, MAX_WINDOWS);
-        break;
-      }
-    }
-    if (count === 0) {
-      toast.style = Toast.Style.Failure;
-      toast.title = `No tileable windows found (looked for: ${filterNames.join(", ")})`;
-      return;
-    }
+    const grid = layoutFor(scan.count);
+    const frames = computeFrames(grid, { width: scan.screen.width, height: scan.screen.height }, gap)
+      .filter((f) => f.windowIndex < scan.count)
+      .map((f) => ({ ...f, x: f.x + scan.screen.x, y: f.y + scan.screen.y }));
 
-    // 3) 拿屏幕可用区（已扣菜单栏 / Dock）
-    const visible = await getScreenVisibleFrameAX();
-
-    // 4) 算出每个窗口在可用区内的相对位置，再平移到屏幕绝对坐标
-    const grid = layoutFor(count);
-    const frames = computeFrames(
-      grid,
-      { width: visible.width, height: visible.height },
-      gap,
-    )
-      .filter((f) => f.windowIndex < count)
-      .map((f) => ({
-        ...f,
-        x: f.x + visible.x,
-        y: f.y + visible.y,
-      }));
-
-    // 5) 一次性写入所有窗口
-    await applyFramesViaOSA(chosenApp, frames);
+    await applyFrames(scan.pids, frames);
 
     toast.style = Toast.Style.Success;
-    toast.title = `Tiled ${count} ${chosenApp} window${count === 1 ? "" : "s"}`;
+    toast.title = `Tiled ${scan.count} ${scan.chosenApp} window${scan.count === 1 ? "" : "s"}`;
   } catch (error) {
     toast.style = Toast.Style.Failure;
     toast.title = "Failed to tile windows";
