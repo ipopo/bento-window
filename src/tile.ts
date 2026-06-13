@@ -1,8 +1,4 @@
-import { getPreferenceValues, showToast, Toast } from "@raycast/api";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { environment, getPreferenceValues, showToast, Toast, WindowManagement } from "@raycast/api";
 
 type LayoutGrid = number[][];
 
@@ -58,6 +54,15 @@ function layoutFor(count: number): LayoutGrid {
   }
 }
 
+function isTileable(w: WindowManagement.Window): boolean {
+  return w.positionable && w.resizable && w.bounds !== "fullscreen";
+}
+
+function isRaycastWindow(w: WindowManagement.Window): boolean {
+  const name = w.application?.name?.toLowerCase();
+  return name === "raycast" || name === "raycast beta";
+}
+
 interface Frame {
   windowIndex: number;
   x: number;
@@ -102,142 +107,12 @@ function computeFrames(grid: LayoutGrid, screen: { width: number; height: number
   });
 }
 
-interface ScanResult {
-  chosenApp: string;
-  pids: number[];
-  count: number;
-  screen: { x: number; y: number; width: number; height: number };
-}
-
-// 一次 JXA 调用完成所有读取：前台 app、候选 app 的 PID 和窗口数、屏幕可用区
-async function scanAll(candidates: string[]): Promise<ScanResult | null> {
-  const script = `
-ObjC.import('AppKit');
-var se = Application('System Events');
-var ws = $.NSWorkspace.sharedWorkspace;
-
-var frontApp = '';
-try { frontApp = ws.frontmostApplication.localizedName.js; } catch(e) {}
-
-var candidates = ${JSON.stringify(candidates)};
-if (candidates.length === 0 && frontApp) candidates = [frontApp];
-
-var chosen = null;
-var allApps = ws.runningApplications;
-for (var ci = 0; ci < candidates.length; ci++) {
-  var target = candidates[ci].toLowerCase();
-  var pids = [];
-  for (var i = 0; i < allApps.count; i++) {
-    var a = allApps.objectAtIndex(i);
-    var n = a.localizedName ? a.localizedName.js : '';
-    if (n.toLowerCase() === target) pids.push(a.processIdentifier);
-  }
-  if (pids.length === 0) continue;
-  var vc = 0;
-  for (var pi = 0; pi < pids.length; pi++) {
-    try {
-      var proc = se.applicationProcesses.whose({unixId: pids[pi]})[0];
-      var wins = proc.windows();
-      for (var j = 0; j < wins.length; j++) {
-        try { if (!wins[j].attributes.byName('AXMinimized').value()) vc++; }
-        catch(e) { vc++; }
-      }
-    } catch(e) {}
-  }
-  if (vc > 0) {
-    chosen = {name: candidates[ci], pids: pids, count: Math.min(vc, ${MAX_WINDOWS})};
-    break;
-  }
-}
-
-if (!chosen) { JSON.stringify(null); } else {
-  var mouseLoc = $.NSEvent.mouseLocation;
-  var screens = $.NSScreen.screens;
-  var tgt;
-  for (var si = 0; si < screens.count; si++) {
-    var s = screens.objectAtIndex(si);
-    var f = s.frame;
-    if (mouseLoc.x >= f.origin.x && mouseLoc.x < f.origin.x + f.size.width &&
-        mouseLoc.y >= f.origin.y && mouseLoc.y < f.origin.y + f.size.height) {
-      tgt = s; break;
-    }
-  }
-  if (!tgt) tgt = $.NSScreen.mainScreen;
-
-  var ps = screens.objectAtIndex(0);
-  var pH = ps.frame.size.height;
-  var vis = tgt.visibleFrame;
-  var frm = tgt.frame;
-  var pf = ps.frame; var pv = ps.visibleFrame;
-  var pmb = (pf.origin.y + pf.size.height) - (pv.origin.y + pv.size.height);
-  var vt = vis.origin.y + vis.size.height;
-  var ft = frm.origin.y + frm.size.height;
-  var mb = (pmb > 0 && Math.abs(vt - ft) < 1) ? pmb : 0;
-
-  JSON.stringify({
-    chosenApp: chosen.name, pids: chosen.pids, count: chosen.count,
-    screen: {
-      x: vis.origin.x,
-      y: pH - (vis.origin.y + vis.size.height) + mb,
-      width: vis.size.width,
-      height: vis.size.height - mb
-    }
-  });
-}`;
-  try {
-    const { stdout } = await execFileAsync("/usr/bin/osascript", ["-l", "JavaScript", "-e", script]);
-    const parsed = JSON.parse(stdout.trim());
-    return parsed as ScanResult | null;
-  } catch {
-    return null;
-  }
-}
-
-// 一次 AppleScript 调用完成所有窗口位置写入
-async function applyFrames(pids: number[], frames: Frame[]): Promise<void> {
-  if (frames.length === 0) return;
-  const sorted = [...frames].sort((a, b) => a.windowIndex - b.windowIndex);
-
-  const collectBlocks = pids
-    .map(
-      (pid) => `
-    try
-      tell (first application process whose unix id is ${pid})
-        repeat with w in windows
-          try
-            if (value of attribute "AXMinimized" of w) is false then set end of visibles to w
-          on error
-            set end of visibles to w
-          end try
-        end repeat
-      end tell
-    end try`,
-    )
-    .join("\n");
-
-  const setBlocks = sorted
-    .map((f) => {
-      const idx = f.windowIndex + 1;
-      return `if (count of visibles) >= ${idx} then
-      try
-        set position of (item ${idx} of visibles) to {${f.x}, ${f.y}}
-        set size of (item ${idx} of visibles) to {${f.width}, ${f.height}}
-        set position of (item ${idx} of visibles) to {${f.x}, ${f.y}}
-      end try
-    end if`;
-    })
-    .join("\n    ");
-
-  const script = `
-tell application "System Events"
-  set visibles to {}
-${collectBlocks}
-  ${setBlocks}
-end tell`;
-  await execFileAsync("/usr/bin/osascript", ["-e", script]);
-}
-
 export default async function Command() {
+  if (!environment.canAccess(WindowManagement)) {
+    await showToast({ style: Toast.Style.Failure, title: "Window Management permission required" });
+    return;
+  }
+
   const prefs = getPreferenceValues<Preferences.Tile>();
   const appNames = (prefs.appName || "")
     .split(",")
@@ -251,26 +126,90 @@ export default async function Command() {
   });
 
   try {
-    const scan = await scanAll(appNames);
+    const [windows, desktops] = await Promise.all([
+      WindowManagement.getWindowsOnActiveDesktop(),
+      WindowManagement.getDesktops(),
+    ]);
 
-    if (!scan) {
+    // Beta 双屏下每个显示器各有一个 active 桌面，优先选含目标窗口的那个
+    const activeDesktop =
+      desktops.find((d) => d.active && windows.some((w) => w.desktopId === d.id)) ?? desktops.find((d) => d.active);
+    if (!activeDesktop) {
       toast.style = Toast.Style.Failure;
-      toast.title =
-        appNames.length > 0
-          ? `No tileable windows found (looked for: ${appNames.join(", ")})`
-          : "No focused window to detect target app";
+      toast.title = "Could not detect active desktop";
       return;
     }
 
-    const grid = layoutFor(scan.count);
-    const frames = computeFrames(grid, { width: scan.screen.width, height: scan.screen.height }, gap)
-      .filter((f) => f.windowIndex < scan.count)
-      .map((f) => ({ ...f, x: f.x + scan.screen.x, y: f.y + scan.screen.y }));
+    let targetAppName: string | undefined;
+    let targetWindows: WindowManagement.Window[];
 
-    await applyFrames(scan.pids, frames);
+    if (prefs.scope === "all") {
+      targetWindows = windows.filter((w) => isTileable(w) && !isRaycastWindow(w)).slice(0, MAX_WINDOWS);
+
+      if (targetWindows.length === 0) {
+        toast.style = Toast.Style.Failure;
+        toast.title = "No tileable windows on the active desktop";
+        return;
+      }
+    } else {
+      if (appNames.length > 0) {
+        for (const candidate of appNames) {
+          const lower = candidate.toLowerCase();
+          if (windows.some((w) => w.application?.name?.toLowerCase() === lower && isTileable(w))) {
+            targetAppName = candidate;
+            break;
+          }
+        }
+      } else {
+        try {
+          const active = await WindowManagement.getActiveWindow();
+          targetAppName = active.application?.name;
+        } catch {
+          /* no active window */
+        }
+      }
+
+      if (!targetAppName) {
+        toast.style = Toast.Style.Failure;
+        toast.title =
+          appNames.length > 0
+            ? `No tileable windows found (looked for: ${appNames.join(", ")})`
+            : "No focused window to detect target app";
+        return;
+      }
+
+      const targetLower = targetAppName.toLowerCase();
+      targetWindows = windows
+        .filter((w) => w.application?.name?.toLowerCase() === targetLower && isTileable(w))
+        .slice(0, MAX_WINDOWS);
+
+      if (targetWindows.length === 0) {
+        toast.style = Toast.Style.Failure;
+        toast.title = `No tileable windows for ${targetAppName}`;
+        return;
+      }
+    }
+
+    const count = targetWindows.length;
+    const grid = layoutFor(count);
+    const frames = computeFrames(grid, activeDesktop.size, gap).filter((f) => f.windowIndex < count);
+
+    await Promise.allSettled(
+      frames.map((f) => {
+        const win = targetWindows[f.windowIndex];
+        return WindowManagement.setWindowBounds({
+          id: win.id,
+          desktopId: activeDesktop.id,
+          bounds: {
+            position: { x: f.x, y: f.y },
+            size: { width: f.width, height: f.height },
+          },
+        });
+      }),
+    );
 
     toast.style = Toast.Style.Success;
-    toast.title = `Tiled ${scan.count} ${scan.chosenApp} window${scan.count === 1 ? "" : "s"}`;
+    toast.title = `Tiled ${count} ${targetAppName ? `${targetAppName} ` : ""}window${count === 1 ? "" : "s"}`;
   } catch (error) {
     toast.style = Toast.Style.Failure;
     toast.title = "Failed to tile windows";
