@@ -195,9 +195,16 @@ export default async function Command() {
 
     const count = targetWindows.length;
     const grid = layoutFor(count);
-    const frames = computeFrames(grid, desktop.size, gap).filter((f) => f.windowIndex < count);
+    const frames = computeFrames(grid, desktop.size, gap).filter(
+      (f) => f.windowIndex < count && f.width > 0 && f.height > 0,
+    );
+    if (frames.length === 0) {
+      toast.style = Toast.Style.Failure;
+      toast.title = "Gap too large for this screen size";
+      return;
+    }
 
-    await Promise.allSettled(
+    const results = await Promise.allSettled(
       frames.map((f) => {
         const win = targetWindows[f.windowIndex];
         return WindowManagement.setWindowBounds({
@@ -211,8 +218,14 @@ export default async function Command() {
       }),
     );
 
-    toast.style = Toast.Style.Success;
-    toast.title = `Tiled ${count} ${targetAppName ? `${targetAppName} ` : ""}window${count === 1 ? "" : "s"}`;
+    const failed = results.filter((r) => r.status === "rejected").length;
+    if (failed === frames.length) {
+      toast.style = Toast.Style.Failure;
+      toast.title = "Failed to move any window";
+    } else {
+      toast.style = Toast.Style.Success;
+      toast.title = `Tiled ${count} ${targetAppName ? `${targetAppName} ` : ""}window${count === 1 ? "" : "s"}`;
+    }
   } catch (error) {
     toast.style = Toast.Style.Failure;
     toast.title = "Failed to tile windows";
