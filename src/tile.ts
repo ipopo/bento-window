@@ -181,7 +181,7 @@ export default async function Command() {
       }
     }
 
-    // 延后到 targetWindows 确定后，用目标窗口所在桌面匹配，多显示器下不会选错屏
+    // Resolve desktop from the target windows so multi-monitor setups pick the correct screen
     const targetDesktopId = targetWindows[0].desktopId;
     const desktop =
       desktops.find((d) => d.id === targetDesktopId) ??
@@ -223,8 +223,9 @@ export default async function Command() {
       toast.style = Toast.Style.Failure;
       toast.title = "Failed to move any window";
     } else {
+      const succeeded = frames.length - failed;
       toast.style = Toast.Style.Success;
-      toast.title = `Tiled ${count} ${targetAppName ? `${targetAppName} ` : ""}window${count === 1 ? "" : "s"}`;
+      toast.title = `Tiled ${succeeded} ${targetAppName ? `${targetAppName} ` : ""}window${succeeded === 1 ? "" : "s"}`;
     }
   } catch (error) {
     toast.style = Toast.Style.Failure;
