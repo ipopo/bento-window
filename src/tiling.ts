@@ -137,6 +137,13 @@ export async function runTile(scope: "app" | "all") {
     .map((s) => s.trim())
     .filter(Boolean);
   const gap = Math.max(0, Number.parseInt(prefs.gap || "0", 10) || 0);
+  const excluded = new Set(
+    (prefs.excludeApps || "")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const isExcluded = (w: WindowManagement.Window) => excluded.has(w.application?.name?.toLowerCase() ?? "");
 
   const toast = await showToast({
     style: Toast.Style.Animated,
@@ -154,7 +161,7 @@ export async function runTile(scope: "app" | "all") {
 
     if (scope === "all") {
       targetWindows = windows
-        .filter((w) => isTileable(w) && !isRaycastWindow(w))
+        .filter((w) => isTileable(w) && !isRaycastWindow(w) && !isExcluded(w))
         .sort(byWindowId)
         .slice(0, MAX_WINDOWS);
 
@@ -192,7 +199,7 @@ export async function runTile(scope: "app" | "all") {
 
       const targetLower = targetAppName.toLowerCase();
       targetWindows = windows
-        .filter((w) => w.application?.name?.toLowerCase() === targetLower && isTileable(w))
+        .filter((w) => w.application?.name?.toLowerCase() === targetLower && isTileable(w) && !isExcluded(w))
         .sort(byWindowId)
         .slice(0, MAX_WINDOWS);
 
