@@ -34,7 +34,7 @@
     {
       "name": "excludeApps",
       "title": "Excluded App Names (Comma-Separated)",
-      "description": "Apps that are never tiled, even by Auto Tile All. Example: Maipo, Music.",
+      "description": "Apps that are never tiled, even by Auto Tile All. Example: Music, Photos.",
       "type": "textfield",
       "required": false,
       "default": ""
