@@ -10,7 +10,7 @@
 type ExtensionPreferences = {
   /** Target App Names (Comma-Separated) - Apps to tile with Auto Tile, tried in order. Example: Ghostty, Terminal, iTerm2. Leave empty to auto-detect from the focused window. */
   "appName": string,
-  /** Excluded App Names (Comma-Separated) - Apps that are never tiled, even by Auto Tile All. Example: Maipo, Music. */
+  /** Excluded App Names (Comma-Separated) - Apps that are never tiled, even by Auto Tile All. Example: Music, Photos. */
   "excludeApps": string,
   /** Window Gap (px) - Spacing between tiles and screen edges. 0 means flush tiles (default). */
   "gap": string
