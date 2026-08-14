@@ -1,8 +1,19 @@
-import { environment, getPreferenceValues, showToast, Toast, WindowManagement } from "@raycast/api";
+import { Cache, environment, getPreferenceValues, showToast, Toast, WindowManagement } from "@raycast/api";
 
 type LayoutGrid = number[][];
 
 const MAX_WINDOWS = 10;
+const SNAPSHOT_TTL = 12 * 60 * 60 * 1000;
+
+const cache = new Cache();
+
+// Original bounds captured right before tiling, so the same hotkey can
+// toggle back: press once to tile, press again to restore.
+interface Snapshot {
+  savedAt: number;
+  ids: string[];
+  windows: { id: string; desktopId: string; x: number; y: number; width: number; height: number }[];
+}
 
 function layoutFor(count: number): LayoutGrid {
   switch (count) {
@@ -192,6 +203,49 @@ export async function runTile(scope: "app" | "all") {
       }
     }
 
+    // Toggle: if the previous invocation tiled exactly this window set, restore
+    // the saved original bounds instead of tiling again.
+    const cacheKey = `original-bounds:${scope}`;
+    const currentIds = targetWindows
+      .map((w) => w.id)
+      .sort()
+      .join(",");
+    const rawSnapshot = cache.get(cacheKey);
+    if (rawSnapshot) {
+      let snapshot: Snapshot | undefined;
+      try {
+        snapshot = JSON.parse(rawSnapshot) as Snapshot;
+      } catch {
+        /* corrupt cache entry */
+      }
+      cache.remove(cacheKey);
+      if (snapshot && Date.now() - snapshot.savedAt < SNAPSHOT_TTL && snapshot.ids.join(",") === currentIds) {
+        const results = await Promise.allSettled(
+          snapshot.windows.map((s) =>
+            WindowManagement.setWindowBounds({
+              id: s.id,
+              desktopId: s.desktopId,
+              bounds: {
+                position: { x: s.x, y: s.y },
+                size: { width: s.width, height: s.height },
+              },
+            }),
+          ),
+        );
+        const failed = results.filter((r) => r.status === "rejected").length;
+        if (failed === snapshot.windows.length) {
+          toast.style = Toast.Style.Failure;
+          toast.title = "Failed to restore windows";
+        } else {
+          const restored = snapshot.windows.length - failed;
+          toast.style = Toast.Style.Success;
+          toast.title = `Restored ${restored} window${restored === 1 ? "" : "s"}`;
+        }
+        return;
+      }
+      // Snapshot expired or the window set changed — fall through to tile and re-save.
+    }
+
     // Resolve desktop from the target windows so multi-monitor setups pick the correct screen
     const targetDesktopId = targetWindows[0].desktopId;
     // getWindowsOnActiveDesktop() already scopes to a single desktop (verified on dual-display
@@ -217,6 +271,26 @@ export async function runTile(scope: "app" | "all") {
       toast.title = "Gap too large for this screen size";
       return;
     }
+
+    const moved = frames.map((f) => targetWindows[f.windowIndex]);
+    const snapshot: Snapshot = {
+      savedAt: Date.now(),
+      ids: currentIds.split(","),
+      windows: moved
+        .filter((w) => typeof w.bounds !== "string")
+        .map((w) => {
+          const b = w.bounds as { position: { x: number; y: number }; size: { width: number; height: number } };
+          return {
+            id: w.id,
+            desktopId: w.desktopId,
+            x: b.position.x,
+            y: b.position.y,
+            width: b.size.width,
+            height: b.size.height,
+          };
+        }),
+    };
+    cache.set(cacheKey, JSON.stringify(snapshot));
 
     const results = await Promise.allSettled(
       frames.map((f) => {
