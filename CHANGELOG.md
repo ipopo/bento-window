@@ -1,16 +1,14 @@
 # Bento Window Changelog
 
-## [Split Commands] - 2026-07-20
+## [Stable Window Order] - {PR_MERGE_DATE}
 
-- Split the single command into two: **Auto Tile** (single app via priority list / focused window) and **Auto Tile All** (every tileable window on the active desktop)
-- Removed the Tile Scope preference — pick the behavior by command, bind a hotkey to each
-- Moved Target App Names and Window Gap to extension-level preferences shared by both commands
+- Windows are now sorted by creation order before grid placement, so the same set of windows always lands in the same slots across repeated invocations — move a window away, press the hotkey again, and it returns to its slot
 
-## [Initial Release] - {PR_MERGE_DATE}
+## [Initial Release] - 2026-08-13
 
 - Tile multiple windows of the same app into bento‑box grids
 - Auto‑adapts layout to window count: 2 (halves), 3 (left two + right big), 4 (2×2), 5 (left 2×2 + right big), 6 (3×2), 7 (4×2 last wide), 8 (4×2), 9 (3×3), 10+ (5×2)
+- Two commands: Auto Tile (single app's windows) and Auto Tile All (every tileable window on the active desktop)
 - Comma‑separated app priority list with auto‑detect fallback (empty = use focused window's app)
-- Tile Scope preference: tile the matched app's windows (default) or every tileable window on the active desktop
 - Targets the desktop the windows are on when multiple desktops are active (multi‑display setups)
 - Configurable gap, default 0 for flush tiles
