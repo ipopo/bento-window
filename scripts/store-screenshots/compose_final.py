@@ -87,10 +87,13 @@ for i, src in enumerate(srcs):
     soft_shadow(p, x, y, cw, ch, 10, blur=8, alpha=60, dy=4)
     p.alpha_composite(tile(src, cw, ch, 10), (x, y))
 
-ICON = 140
+ICON = 132
 icon = Image.open("/Users/popo/Downloads/Code/gemini/bento-window/assets/extension-icon.png").convert("RGBA")
 icon = icon.resize((ICON, ICON), Image.LANCZOS)
-ix, iy = 700, (PH - ICON) // 2 - 70
+# icon+chevron 作为一组: 水平居中于乱窗口区(右缘约 722)与网格(gx=890)的间隙, 垂直对齐面板中轴
+GROUP_CX = 806
+GROUP_H = ICON + 30 + 50
+ix, iy = GROUP_CX - ICON // 2, (PH - GROUP_H) // 2
 sil = Image.new("RGBA", p.size, (0, 0, 0, 0))
 t2 = Image.new("RGBA", (ICON, ICON), (0, 0, 12, 110))
 t2.putalpha(icon.split()[3].point(lambda a: int(a * 0.4)))
@@ -98,7 +101,7 @@ sil.alpha_composite(t2, (ix, iy + 5))
 p.alpha_composite(sil.filter(ImageFilter.GaussianBlur(8)))
 p.alpha_composite(icon, (ix, iy))
 
-cx, cy = ix + ICON // 2, iy + ICON + 60
+cx, cy = GROUP_CX, iy + ICON + 30 + 25
 d = ImageDraw.Draw(p)
 pts = [(cx - 12, cy - 24), (cx + 12, cy), (cx - 12, cy + 24)]
 d.line(pts, fill=(235, 236, 242, 255), width=8, joint="curve")
