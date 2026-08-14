@@ -30,10 +30,14 @@ def canvas():
     return cover((2300, 0, 6016, 1500), W, H)
 
 def panel_base():
-    # 浅色磨砂面板: 模糊壁纸 + 高不透明白, 内部低对比
-    p = cover((2600, 200, 5600, 1300), PW, PH).filter(ImageFilter.GaussianBlur(30))
-    p.alpha_composite(Image.new("RGBA", (PW, PH), (248, 249, 251, 215)))
-    return p
+    # 深灰面板: 上浅下深微渐变, 白窗口高对比
+    p = Image.new("RGB", (PW, PH))
+    t_, b_ = (52, 52, 60), (38, 38, 45)
+    dd = ImageDraw.Draw(p)
+    for y in range(PH):
+        k = y / PH
+        dd.line([(0, y), (PW, y)], fill=tuple(int(a + (b - a) * k) for a, b in zip(t_, b_)))
+    return p.convert("RGBA")
 
 def place_panel(bg, p):
     sh = Image.new("RGBA", bg.size, (0, 0, 0, 0))
@@ -50,7 +54,7 @@ srcs = [Image.open(x).convert("RGBA") for x in wins]
 def soft_shadow(dst, x, y, w, h, r, blur=10, alpha=60, dy=4):
     # 面板内投影用浅色低 alpha, 避免触发校验器的强梯度阈值
     sh = Image.new("RGBA", dst.size, (0, 0, 0, 0))
-    ImageDraw.Draw(sh).rounded_rectangle([x, y + dy, x + w, y + h + dy], r, fill=(90, 95, 120, alpha))
+    ImageDraw.Draw(sh).rounded_rectangle([x, y + dy, x + w, y + h + dy], r, fill=(0, 0, 12, alpha))
     dst.alpha_composite(sh.filter(ImageFilter.GaussianBlur(blur)))
 
 def tile(src, w, h, r=12):
@@ -92,7 +96,7 @@ icon = Image.open("/Users/popo/Downloads/Code/gemini/bento-window/assets/extensi
 icon = icon.resize((ICON, ICON), Image.LANCZOS)
 ix, iy = 700, (PH - ICON) // 2 - 70
 sil = Image.new("RGBA", p.size, (0, 0, 0, 0))
-t2 = Image.new("RGBA", (ICON, ICON), (90, 95, 120, 70))
+t2 = Image.new("RGBA", (ICON, ICON), (0, 0, 12, 110))
 t2.putalpha(icon.split()[3].point(lambda a: int(a * 0.4)))
 sil.alpha_composite(t2, (ix, iy + 5))
 p.alpha_composite(sil.filter(ImageFilter.GaussianBlur(8)))
@@ -101,9 +105,9 @@ p.alpha_composite(icon, (ix, iy))
 cx, cy = ix + ICON // 2, iy + ICON + 60
 d = ImageDraw.Draw(p)
 pts = [(cx - 12, cy - 24), (cx + 12, cy), (cx - 12, cy + 24)]
-d.line(pts, fill=(140, 145, 165, 255), width=8, joint="curve")
+d.line(pts, fill=(235, 236, 242, 255), width=8, joint="curve")
 for pt in (pts[0], pts[2]):
-    d.ellipse([pt[0] - 4, pt[1] - 4, pt[0] + 4, pt[1] + 4], fill=(140, 145, 165, 255))
+    d.ellipse([pt[0] - 4, pt[1] - 4, pt[0] + 4, pt[1] + 4], fill=(235, 236, 242, 255))
 
 place_panel(bg, p)
 bg.convert("RGB").save("bento-store-hero.png")
@@ -112,13 +116,18 @@ bg.convert("RGB").save("bento-store-hero.png")
 bg = canvas()
 p = panel_base()
 M, g2 = 18, 16
-cw, ch = (PW - 2 * M - g2) // 2, (PH - 2 * M - g2) // 2
-for i, src in enumerate(srcs):
-    r_, c_ = divmod(i, 2)
-    x = M + c_ * (cw + g2)
-    y = M + r_ * (ch + g2)
-    soft_shadow(p, x, y, cw, ch, 14, blur=10, alpha=60, dy=4)
-    p.alpha_composite(tile(src, cw, ch, 14), (x, y))
+# 3 窗口布局: 左列上下两格 + 右侧一整高大格(列分割偏左, 让画面中心落在大格内)
+lw = 660
+rw = PW - 2 * M - g2 - lw
+lh = (PH - 2 * M - g2) // 2
+rh = PH - 2 * M
+for x, y, w, h, src in [
+    (M, M, lw, lh, srcs[1]),
+    (M, M + lh + g2, lw, lh, srcs[2]),
+    (M + lw + g2, M, rw, rh, srcs[0]),
+]:
+    soft_shadow(p, x, y, w, h, 14, blur=10, alpha=70, dy=4)
+    p.alpha_composite(tile(src, w, h, 14), (x, y))
 
 place_panel(bg, p)
 bg.convert("RGB").save("bento-store-1.png")
