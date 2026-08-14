@@ -30,14 +30,10 @@ def canvas():
     return cover((2300, 0, 6016, 1500), W, H)
 
 def panel_base():
-    # 深灰面板: 上浅下深微渐变, 白窗口高对比
-    p = Image.new("RGB", (PW, PH))
-    t_, b_ = (52, 52, 60), (38, 38, 45)
-    dd = ImageDraw.Draw(p)
-    for y in range(PH):
-        k = y / PH
-        dd.line([(0, y), (PW, y)], fill=tuple(int(a + (b - a) * k) for a, b in zip(t_, b_)))
-    return p.convert("RGBA")
+    # 深色玻璃: 重模糊壁纸透底 + 深色染色, 半透明质感
+    p = cover((2000, 0, 6016, 1500), PW, PH).filter(ImageFilter.GaussianBlur(45))
+    p.alpha_composite(Image.new("RGBA", (PW, PH), (22, 24, 34, 168)))
+    return p
 
 def place_panel(bg, p):
     sh = Image.new("RGBA", bg.size, (0, 0, 0, 0))
@@ -45,7 +41,7 @@ def place_panel(bg, p):
     bg.alpha_composite(sh.filter(ImageFilter.GaussianBlur(28)))
     bg.alpha_composite(rounded(p, PR), (PX, PY))
     ol = Image.new("RGBA", bg.size, (0, 0, 0, 0))
-    ImageDraw.Draw(ol).rounded_rectangle([PX, PY, PX + PW, PY + PH], PR, outline=(255, 255, 255, 120), width=2)
+    ImageDraw.Draw(ol).rounded_rectangle([PX, PY, PX + PW, PY + PH], PR, outline=(255, 255, 255, 90), width=2)
     bg.alpha_composite(ol)
 
 wins = ["win_110261.png", "win_110347.png", "win_110349.png", "win_110351.png"]
