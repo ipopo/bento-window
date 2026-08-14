@@ -174,6 +174,7 @@ export async function runTile(scope: "app" | "all") {
       if (appNames.length > 0) {
         for (const candidate of appNames) {
           const lower = candidate.toLowerCase();
+          if (excluded.has(lower)) continue;
           if (windows.some((w) => w.application?.name?.toLowerCase() === lower && isTileable(w))) {
             targetAppName = candidate;
             break;
