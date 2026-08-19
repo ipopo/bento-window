@@ -1,4 +1,5 @@
-import { Cache, environment, getPreferenceValues, showToast, Toast, WindowManagement } from "@raycast/api";
+import { Cache, getPreferenceValues, open, showToast, Toast } from "@raycast/api";
+import { AccessibilityError, applyMoves, getState, WMMove, WMScreen, WMWindow } from "./wm";
 
 type LayoutGrid = number[][];
 
@@ -13,7 +14,6 @@ const cache = new Cache();
 // away from its slot, the next press re-tiles instead of restoring.
 interface WindowBounds {
   id: string;
-  desktopId: string;
   x: number;
   y: number;
   width: number;
@@ -31,13 +31,12 @@ interface Snapshot {
 // can drift from the requested frame by a couple of cells.
 const TILED_TOLERANCE = 30;
 
-function isNearTiledSlot(w: WindowManagement.Window, slot: WindowBounds): boolean {
-  if (typeof w.bounds === "string") return false;
+function isNearTiledSlot(w: WMWindow, slot: WindowBounds): boolean {
   return (
-    Math.abs(w.bounds.position.x - slot.x) <= TILED_TOLERANCE &&
-    Math.abs(w.bounds.position.y - slot.y) <= TILED_TOLERANCE &&
-    Math.abs(w.bounds.size.width - slot.width) <= TILED_TOLERANCE &&
-    Math.abs(w.bounds.size.height - slot.height) <= TILED_TOLERANCE
+    Math.abs(w.x - slot.x) <= TILED_TOLERANCE &&
+    Math.abs(w.y - slot.y) <= TILED_TOLERANCE &&
+    Math.abs(w.width - slot.width) <= TILED_TOLERANCE &&
+    Math.abs(w.height - slot.height) <= TILED_TOLERANCE
   );
 }
 
@@ -91,19 +90,36 @@ function layoutFor(count: number): LayoutGrid {
   }
 }
 
-function isTileable(w: WindowManagement.Window): boolean {
-  return w.positionable && w.resizable && w.bounds !== "fullscreen";
+function isRaycastWindow(w: WMWindow): boolean {
+  const name = w.appName.toLowerCase();
+  return name === "raycast" || name === "raycast beta";
 }
 
-function isRaycastWindow(w: WindowManagement.Window): boolean {
-  const name = w.application?.name?.toLowerCase();
-  return name === "raycast" || name === "raycast beta";
+// A window filling its screen's FULL frame (menu bar area included) is a
+// native-fullscreen window — AX can't move it, skip. Zoomed windows only
+// fill the visible frame, so they still tile.
+function isFullscreen(w: WMWindow, screens: WMScreen[]): boolean {
+  return screens.some(
+    (s) =>
+      Math.abs(w.x - s.frame.x) <= 2 &&
+      Math.abs(w.y - s.frame.y) <= 2 &&
+      Math.abs(w.width - s.frame.width) <= 2 &&
+      Math.abs(w.height - s.frame.height) <= 2,
+  );
+}
+
+function screenOf(w: WMWindow, screens: WMScreen[]): WMScreen | undefined {
+  const cx = w.x + w.width / 2;
+  const cy = w.y + w.height / 2;
+  return screens.find(
+    (s) => cx >= s.frame.x && cx < s.frame.x + s.frame.width && cy >= s.frame.y && cy < s.frame.y + s.frame.height,
+  );
 }
 
 // Sort by window id (creation order) so the same window always lands in the same
 // grid slot across repeated invocations. Titles are too volatile for this —
 // terminal titles change with the working directory.
-function byWindowId(a: WindowManagement.Window, b: WindowManagement.Window): number {
+function byWindowId(a: WMWindow, b: WMWindow): number {
   return String(a.id).localeCompare(String(b.id), undefined, { numeric: true });
 }
 
@@ -151,12 +167,22 @@ function computeFrames(grid: LayoutGrid, screen: { width: number; height: number
   });
 }
 
-export async function runTile(scope: "app" | "all") {
-  if (!environment.canAccess(WindowManagement)) {
-    await showToast({ style: Toast.Style.Failure, title: "Window Management permission required" });
-    return;
-  }
+function toMove(current: WMWindow, target: { x: number; y: number; width: number; height: number }): WMMove {
+  return {
+    id: current.id,
+    pid: current.pid,
+    cx: current.x,
+    cy: current.y,
+    cw: current.width,
+    ch: current.height,
+    x: target.x,
+    y: target.y,
+    width: target.width,
+    height: target.height,
+  };
+}
 
+export async function runTile(scope: "app" | "all") {
   const prefs = getPreferenceValues<Preferences>();
   const appNames = (prefs.appName || "")
     .split(",")
@@ -169,7 +195,7 @@ export async function runTile(scope: "app" | "all") {
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean),
   );
-  const isExcluded = (w: WindowManagement.Window) => excluded.has(w.application?.name?.toLowerCase() ?? "");
+  const isExcluded = (w: WMWindow) => excluded.has(w.appName.toLowerCase());
 
   const toast = await showToast({
     style: Toast.Style.Animated,
@@ -177,17 +203,28 @@ export async function runTile(scope: "app" | "all") {
   });
 
   try {
-    const [windows, desktops] = await Promise.all([
-      WindowManagement.getWindowsOnActiveDesktop(),
-      WindowManagement.getDesktops(),
-    ]);
+    const { windows, screens } = await getState();
+    if (screens.length === 0) {
+      toast.style = Toast.Style.Failure;
+      toast.title = "No screens detected";
+      return;
+    }
+
+    // The CG list is front-to-back, so the first non-Raycast window is the one
+    // the user was working in — its screen is the "active desktop" and its app
+    // is the auto-detect target.
+    const frontWindow = windows.find((w) => !isRaycastWindow(w) && !isFullscreen(w, screens));
+    const activeScreen = (frontWindow && screenOf(frontWindow, screens)) ?? screens[0];
+    const onActiveScreen = windows.filter(
+      (w) => screenOf(w, screens)?.id === activeScreen.id && !isFullscreen(w, screens),
+    );
 
     let targetAppName: string | undefined;
-    let targetWindows: WindowManagement.Window[];
+    let targetWindows: WMWindow[];
 
     if (scope === "all") {
-      targetWindows = windows
-        .filter((w) => isTileable(w) && !isRaycastWindow(w) && !isExcluded(w))
+      targetWindows = onActiveScreen
+        .filter((w) => !isRaycastWindow(w) && !isExcluded(w))
         .sort(byWindowId)
         .slice(0, MAX_WINDOWS);
 
@@ -201,18 +238,13 @@ export async function runTile(scope: "app" | "all") {
         for (const candidate of appNames) {
           const lower = candidate.toLowerCase();
           if (excluded.has(lower)) continue;
-          if (windows.some((w) => w.application?.name?.toLowerCase() === lower && isTileable(w))) {
+          if (onActiveScreen.some((w) => w.appName.toLowerCase() === lower)) {
             targetAppName = candidate;
             break;
           }
         }
       } else {
-        try {
-          const active = await WindowManagement.getActiveWindow();
-          targetAppName = active.application?.name;
-        } catch {
-          /* no active window */
-        }
+        targetAppName = frontWindow?.appName;
       }
 
       if (!targetAppName) {
@@ -225,8 +257,8 @@ export async function runTile(scope: "app" | "all") {
       }
 
       const targetLower = targetAppName.toLowerCase();
-      targetWindows = windows
-        .filter((w) => w.application?.name?.toLowerCase() === targetLower && isTileable(w) && !isExcluded(w))
+      targetWindows = onActiveScreen
+        .filter((w) => w.appName.toLowerCase() === targetLower && !isExcluded(w))
         .sort(byWindowId)
         .slice(0, MAX_WINDOWS);
 
@@ -266,24 +298,17 @@ export async function runTile(scope: "app" | "all") {
           });
 
         if (gridIntact) {
-          const results = await Promise.allSettled(
-            snapshot.windows.map((s) =>
-              WindowManagement.setWindowBounds({
-                id: s.id,
-                desktopId: s.desktopId,
-                bounds: {
-                  position: { x: s.x, y: s.y },
-                  size: { width: s.width, height: s.height },
-                },
-              }),
-            ),
-          );
-          const failed = results.filter((r) => r.status === "rejected").length;
-          if (failed === snapshot.windows.length) {
+          const windowById = new Map(targetWindows.map((w) => [w.id, w]));
+          const restores = snapshot.windows.flatMap((s) => {
+            const current = windowById.get(s.id);
+            return current ? [toMove(current, s)] : [];
+          });
+          const { failed } = await applyMoves(restores);
+          if (restores.length === 0 || failed.length === restores.length) {
             toast.style = Toast.Style.Failure;
             toast.title = "Failed to restore windows";
           } else {
-            const restored = snapshot.windows.length - failed;
+            const restored = restores.length - failed.length;
             toast.style = Toast.Style.Success;
             toast.title = `Restored ${restored} window${restored === 1 ? "" : "s"}`;
           }
@@ -295,24 +320,10 @@ export async function runTile(scope: "app" | "all") {
       // Snapshot expired or the window set changed — fall through to tile and re-save.
     }
 
-    // Resolve desktop from the target windows so multi-monitor setups pick the correct screen
-    const targetDesktopId = targetWindows[0].desktopId;
-    // getWindowsOnActiveDesktop() already scopes to a single desktop (verified on dual-display
-    // setups), so this filter is a no-op today — it just guarantees the invariant at code level.
-    targetWindows = targetWindows.filter((w) => w.desktopId === targetDesktopId);
-    const desktop =
-      desktops.find((d) => d.id === targetDesktopId) ??
-      desktops.find((d) => d.active && windows.some((w) => w.desktopId === d.id)) ??
-      desktops.find((d) => d.active);
-    if (!desktop) {
-      toast.style = Toast.Style.Failure;
-      toast.title = "Could not detect active desktop";
-      return;
-    }
-
     const count = targetWindows.length;
     const grid = layoutFor(count);
-    const frames = computeFrames(grid, desktop.size, gap).filter(
+    const area = activeScreen.visible;
+    const frames = computeFrames(grid, { width: area.width, height: area.height }, gap).filter(
       (f) => f.windowIndex < count && f.width > 0 && f.height > 0,
     );
     if (frames.length === 0) {
@@ -322,36 +333,29 @@ export async function runTile(scope: "app" | "all") {
     }
 
     const moved = frames.map((f) => targetWindows[f.windowIndex]);
-    const originals: WindowBounds[] = moved
-      .filter((w) => typeof w.bounds !== "string")
-      .map((w) => {
-        const b = w.bounds as { position: { x: number; y: number }; size: { width: number; height: number } };
-        return {
-          id: w.id,
-          desktopId: w.desktopId,
-          x: b.position.x,
-          y: b.position.y,
-          width: b.size.width,
-          height: b.size.height,
-        };
-      });
+    const originals: WindowBounds[] = moved.map((w) => ({
+      id: w.id,
+      x: w.x,
+      y: w.y,
+      width: w.width,
+      height: w.height,
+    }));
 
-    const results = await Promise.allSettled(
-      frames.map((f) => {
-        const win = targetWindows[f.windowIndex];
-        return WindowManagement.setWindowBounds({
-          id: win.id,
-          desktopId: desktop.id,
-          bounds: {
-            position: { x: f.x, y: f.y },
-            size: { width: f.width, height: f.height },
-          },
-        });
+    const moves = frames.map((f) =>
+      toMove(targetWindows[f.windowIndex], {
+        x: area.x + f.x,
+        y: area.y + f.y,
+        width: f.width,
+        height: f.height,
       }),
     );
+    const { failed } = await applyMoves(moves);
+    if (failed.length > 0) {
+      const byId = new Map(targetWindows.map((w) => [w.id, w.appName]));
+      console.log("applyMoves failed:", failed.map((id) => `${id}(${byId.get(id) ?? "?"})`).join(", "));
+    }
 
-    const failed = results.filter((r) => r.status === "rejected").length;
-    if (failed === frames.length) {
+    if (failed.length === frames.length) {
       toast.style = Toast.Style.Failure;
       toast.title = "Failed to move any window";
     } else {
@@ -359,21 +363,11 @@ export async function runTile(scope: "app" | "all") {
       // e.g. terminals round to character cells) so the next press can tell an
       // intact grid from a disturbed one.
       try {
-        const after = await WindowManagement.getWindowsOnActiveDesktop();
+        const { windows: after } = await getState();
         const movedIds = new Set(moved.map((w) => w.id));
         const tiled: WindowBounds[] = after
-          .filter((w) => movedIds.has(w.id) && typeof w.bounds !== "string")
-          .map((w) => {
-            const b = w.bounds as { position: { x: number; y: number }; size: { width: number; height: number } };
-            return {
-              id: w.id,
-              desktopId: w.desktopId,
-              x: b.position.x,
-              y: b.position.y,
-              width: b.size.width,
-              height: b.size.height,
-            };
-          });
+          .filter((w) => movedIds.has(w.id))
+          .map((w) => ({ id: w.id, x: w.x, y: w.y, width: w.width, height: w.height }));
         const snapshot: Snapshot = {
           savedAt: Date.now(),
           ids: currentIds.split(","),
@@ -384,11 +378,25 @@ export async function runTile(scope: "app" | "all") {
       } catch {
         /* snapshot is best-effort — tiling already succeeded */
       }
-      const succeeded = frames.length - failed;
+      const succeeded = frames.length - failed.length;
       toast.style = Toast.Style.Success;
       toast.title = `Tiled ${succeeded} ${targetAppName ? `${targetAppName} ` : ""}window${succeeded === 1 ? "" : "s"}`;
     }
   } catch (error) {
+    if (error instanceof AccessibilityError) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Accessibility permission required",
+        message: "System Settings → Privacy & Security → Accessibility → enable Raycast",
+        primaryAction: {
+          title: "Open Accessibility Settings",
+          onAction: () => {
+            open("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
+          },
+        },
+      });
+      return;
+    }
     toast.style = Toast.Style.Failure;
     toast.title = "Failed to tile windows";
     toast.message = error instanceof Error ? error.message : String(error);
