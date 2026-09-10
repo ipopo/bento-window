@@ -40,7 +40,9 @@ function isNearTiledSlot(w: WMWindow, slot: WindowBounds): boolean {
   );
 }
 
-function layoutFor(count: number): LayoutGrid {
+// Base tables, tuned for a landscape screen. layoutFor() below decides whether
+// a given screen is better served by their transpose.
+function baseLayout(count: number): LayoutGrid {
   switch (count) {
     case 1:
       return [[1]];
@@ -154,17 +156,76 @@ function computeFrames(grid: LayoutGrid, screen: { width: number; height: number
     }
   }
 
+  // Round the edges, then subtract — neighbouring tiles must agree on the
+  // boundary they share. Rounding origin and length separately lets them
+  // disagree by a pixel whenever the cell size isn't whole: a 2x5 grid on
+  // 1512px leaves hairline gaps, a 5x2 grid on 2304px makes tiles overlap
+  // and clip each other's edges.
   return Object.entries(extents).map(([n, e]) => {
-    const colSpan = e.maxC - e.minC + 1;
-    const rowSpan = e.maxR - e.minR + 1;
+    const left = Math.round(gap + e.minC * (cellW + gap));
+    const right = Math.round(gap + e.maxC * (cellW + gap) + cellW);
+    const top = Math.round(gap + e.minR * (cellH + gap));
+    const bottom = Math.round(gap + e.maxR * (cellH + gap) + cellH);
     return {
       windowIndex: Number(n) - 1,
-      x: Math.round(gap + e.minC * (cellW + gap)),
-      y: Math.round(gap + e.minR * (cellH + gap)),
-      width: Math.round(colSpan * cellW + (colSpan - 1) * gap),
-      height: Math.round(rowSpan * cellH + (rowSpan - 1) * gap),
+      x: left,
+      y: top,
+      width: right - left,
+      height: bottom - top,
     };
   });
+}
+
+// Transposing swaps rows for columns but leaves the numbering running down the
+// columns; renumbering in reading order puts slot 1 back at the top-left, which
+// is what the creation-order sort assumes.
+function transpose(grid: LayoutGrid): LayoutGrid {
+  return grid[0].map((_, c) => grid.map((row) => row[c]));
+}
+
+function renumberInReadingOrder(grid: LayoutGrid): LayoutGrid {
+  const seen = new Map<number, number>();
+  return grid.map((row) =>
+    row.map((n) => {
+      if (n === 0) return 0;
+      let slot = seen.get(n);
+      if (slot === undefined) {
+        slot = seen.size + 1;
+        seen.set(n, slot);
+      }
+      return slot;
+    }),
+  );
+}
+
+// Tiles read best near this aspect. Scored on a log scale so that half and
+// double the target count as equally wrong. Anything from 1.0 to 1.5 picks the
+// same layout on every screen tested; 16:9 is far enough off that it starts
+// flipping landscape screens too, so 1.2 leaves room on both sides.
+const TILE_ASPECT = 1.2;
+
+function aspectPenalty(grid: LayoutGrid, area: { width: number; height: number }, gap: number): number {
+  const frames = computeFrames(grid, area, gap);
+  if (frames.length === 0) return Number.POSITIVE_INFINITY;
+  let total = 0;
+  for (const f of frames) {
+    // A gap too large for the grid yields degenerate tiles — never prefer those.
+    if (f.width <= 0 || f.height <= 0) return Number.POSITIVE_INFINITY;
+    total += Math.abs(Math.log(f.width / f.height / TILE_ASPECT));
+  }
+  return total / frames.length;
+}
+
+// A portrait screen turns the landscape tables into slivers: two windows on a
+// 1296x2304 display would get 648px each, an aspect of 0.28. Instead of a
+// portrait threshold and a second hand-written table, score each table against
+// its own transpose and keep the better fit — a landscape screen simply never
+// picks the transpose, and an unusually wide one gets the same treatment for
+// free.
+function layoutFor(count: number, area: { width: number; height: number }, gap: number): LayoutGrid {
+  const base = baseLayout(count);
+  const flipped = renumberInReadingOrder(transpose(base));
+  return aspectPenalty(flipped, area, gap) < aspectPenalty(base, area, gap) ? flipped : base;
 }
 
 function toMove(current: WMWindow, target: { x: number; y: number; width: number; height: number }): WMMove {
@@ -321,11 +382,9 @@ export async function runTile(scope: "app" | "all") {
     }
 
     const count = targetWindows.length;
-    const grid = layoutFor(count);
     const area = activeScreen.visible;
-    const frames = computeFrames(grid, { width: area.width, height: area.height }, gap).filter(
-      (f) => f.windowIndex < count && f.width > 0 && f.height > 0,
-    );
+    const grid = layoutFor(count, area, gap);
+    const frames = computeFrames(grid, area, gap).filter((f) => f.windowIndex < count && f.width > 0 && f.height > 0);
     if (frames.length === 0) {
       toast.style = Toast.Style.Failure;
       toast.title = "Gap too large for this screen size";
