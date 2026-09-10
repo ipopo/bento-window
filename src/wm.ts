@@ -141,22 +141,35 @@ function run(argv) {
       for (const m of group) failed.push(m.id);
       continue;
     }
-    // 先全部完成匹配再移动，避免移动后的坐标干扰后续匹配
-    const used = {};
-    const matched = [];
-    for (const m of group) {
-      let hit = -1;
+    // 先全部完成匹配再移动，避免移动后的坐标干扰后续匹配。
+    // 匹配用「最近优先」而不是「第一个落在容差内」：macOS 新窗口 cascade
+    // 偏移约 20px，小于容差 40，逐个取首个命中会让层叠的同 app 窗口互相错配、
+    // 交换槽位。先枚举全部候选对，按四维距离全局升序锁定，层叠时也能对上。
+    const pairs = [];
+    for (let g = 0; g < group.length; g++) {
+      const m = group[g];
       for (let i = 0; i < positions.length; i++) {
-        if (used[i]) continue;
         const p = positions[i], s = sizes[i];
-        if (Math.abs(p[0]-m.cx)<=TOL && Math.abs(p[1]-m.cy)<=TOL &&
-            Math.abs(s[0]-m.cw)<=TOL && Math.abs(s[1]-m.ch)<=TOL) { hit = i; break; }
+        const dx = p[0]-m.cx, dy = p[1]-m.cy, dw = s[0]-m.cw, dh = s[1]-m.ch;
+        if (Math.abs(dx)<=TOL && Math.abs(dy)<=TOL && Math.abs(dw)<=TOL && Math.abs(dh)<=TOL) {
+          pairs.push({ g: g, i: i, dist: dx*dx + dy*dy + dw*dw + dh*dh });
+        }
       }
-      if (hit === -1) { failed.push(m.id); continue; }
-      used[hit] = true;
-      matched.push([hit, m]);
     }
-    for (const [i, m] of matched) {
+    pairs.sort((a, b) => a.dist - b.dist);
+    const usedWindow = {}, usedMove = {};
+    const matched = [];
+    for (const pr of pairs) {
+      if (usedWindow[pr.i] || usedMove[pr.g]) continue;
+      usedWindow[pr.i] = true;
+      usedMove[pr.g] = true;
+      matched.push(pr);
+    }
+    for (let g = 0; g < group.length; g++) if (!usedMove[g]) failed.push(group[g].id);
+    // 按原顺序移动，保持与调用方给出的槽位顺序一致
+    matched.sort((a, b) => a.g - b.g);
+    for (const pr of matched) {
+      const i = pr.i, m = group[pr.g];
       // 关键：用 proc.windows[i] 的 whose 链式引用寻址，绝不调用 windows()
       // 物化——物化出的引用按进程名寻址，同名多进程（如两个 Ghostty 实例）
       // 时会全部解析到第一个进程，窗口就指错了
