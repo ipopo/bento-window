@@ -110,12 +110,25 @@ function isFullscreen(w: WMWindow, screens: WMScreen[]): boolean {
   );
 }
 
+// The screen a window mostly sits on. Testing whether the window's centre falls
+// inside a screen looks equivalent but isn't: a window hanging off the bottom
+// edge has its centre in dead space and matches nothing, and the caller then
+// silently falls back to the first screen — which is how a portrait desktop
+// ended up being tiled to the built-in display's proportions.
 function screenOf(w: WMWindow, screens: WMScreen[]): WMScreen | undefined {
-  const cx = w.x + w.width / 2;
-  const cy = w.y + w.height / 2;
-  return screens.find(
-    (s) => cx >= s.frame.x && cx < s.frame.x + s.frame.width && cy >= s.frame.y && cy < s.frame.y + s.frame.height,
-  );
+  let best: WMScreen | undefined;
+  let bestArea = 0;
+  for (const s of screens) {
+    const overlapW = Math.min(w.x + w.width, s.frame.x + s.frame.width) - Math.max(w.x, s.frame.x);
+    const overlapH = Math.min(w.y + w.height, s.frame.y + s.frame.height) - Math.max(w.y, s.frame.y);
+    if (overlapW <= 0 || overlapH <= 0) continue;
+    const area = overlapW * overlapH;
+    if (area > bestArea) {
+      bestArea = area;
+      best = s;
+    }
+  }
+  return best;
 }
 
 // Sort by window id (creation order) so the same window always lands in the same
@@ -264,21 +277,30 @@ export async function runTile(scope: "app" | "all") {
   });
 
   try {
-    const { windows, screens } = await getState();
+    const { windows, screens, cursor } = await getState();
     if (screens.length === 0) {
       toast.style = Toast.Style.Failure;
       toast.title = "No screens detected";
       return;
     }
 
-    // The CG list is front-to-back, so the first non-Raycast window is the one
-    // the user was working in — its screen is the "active desktop" and its app
-    // is the auto-detect target.
-    const frontWindow = windows.find((w) => !isRaycastWindow(w) && !isFullscreen(w, screens));
-    const activeScreen = (frontWindow && screenOf(frontWindow, screens)) ?? screens[0];
+    // The pointer decides which desktop is "active". The CG list can't: with
+    // per-display Spaces its front-to-back order is grouped by Space rather
+    // than global, so its first entry regularly belongs to a screen the user
+    // isn't on. Point at the screen you want tiled.
+    const activeScreen =
+      screens.find(
+        (s) =>
+          cursor.x >= s.frame.x &&
+          cursor.x < s.frame.x + s.frame.width &&
+          cursor.y >= s.frame.y &&
+          cursor.y < s.frame.y + s.frame.height,
+      ) ?? screens[0];
     const onActiveScreen = windows.filter(
       (w) => screenOf(w, screens)?.id === activeScreen.id && !isFullscreen(w, screens),
     );
+    // Auto-detect target: the frontmost window on that screen.
+    const frontWindow = onActiveScreen.find((w) => !isRaycastWindow(w));
 
     let targetAppName: string | undefined;
     let targetWindows: WMWindow[];

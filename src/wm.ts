@@ -30,8 +30,9 @@ export interface WMScreen {
 }
 
 export interface WMState {
-  windows: WMWindow[]; // front-to-back 顺序（CG 返回序）
+  windows: WMWindow[]; // CG 返回序。多屏下按 Space 分组，不是全局 z-order
   screens: WMScreen[];
+  cursor: { x: number; y: number }; // CG 左上角原点坐标系
 }
 
 export interface WMMove {
@@ -113,7 +114,12 @@ function run() {
     }
     screens.push({ id: String(i), frame, visible });
   }
-  return JSON.stringify({ windows, screens });
+  // 鼠标位置用来判断用户在哪块屏。CG 列表首个窗口做不到这件事：多屏独立
+  // Spaces 下它按 Space 分组，不是全局 z-order（实测前台是 ghostty 时首位
+  // 却是另一块屏的访达窗口）
+  const m = $.NSEvent.mouseLocation; // Cocoa 左下原点
+  const cursor = { x: m.x, y: H0 - m.y };
+  return JSON.stringify({ windows, screens, cursor });
 }
 `;
 
