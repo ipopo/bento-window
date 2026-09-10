@@ -121,20 +121,35 @@ export async function getState(): Promise<WMState> {
   return JSON.parse(await runJXA(LIST_SCRIPT)) as WMState;
 }
 
+// 全部窗口在一个 osascript 进程里处理。不要改成「每 app 一个进程并行」：
+// System Events 是单进程，所有 Apple Event 都在它那里排队串行执行，多开
+// osascript 只多付冷启动和 CPU 竞争——实测 6 个 app 从 1271ms 退化到 1797ms。
 const APPLY_SCRIPT = `
 function run(argv) {
   const moves = JSON.parse(argv[0]);
   const se = Application('System Events');
   const TOL = 40;
   const failed = [];
+  // 一次拿全部进程的 pid 建索引，之后按索引寻址。不要用 whose({unixId})：
+  // 那是过滤查询，System Events 在 specifier 每次求值时都会重跑一遍全进程
+  // 匹配（实测每 app 约 58ms，之后每次 .windows 访问还要再付一次），而
+  // unixId() 一次往返就拿到全部 128 个进程、只要 34ms。实测读开销 910→426ms。
+  // 索引寻址同时规避了物化引用按进程名寻址、同名多进程指错窗口的老坑。
+  const allPids = se.processes.unixId();
+  const pidIndex = {};
+  for (let i = 0; i < allPids.length; i++) pidIndex[allPids[i]] = i;
   const byPid = {};
   for (const m of moves) (byPid[m.pid] = byPid[m.pid] || []).push(m);
   for (const pid of Object.keys(byPid)) {
     const group = byPid[pid];
     let proc, positions, sizes;
     try {
-      proc = se.processes.whose({ unixId: Number(pid) })[0];
-      // 批量取坐标：一次 Apple Event，比逐窗口快得多
+      const idx = pidIndex[pid];
+      if (idx === undefined) throw new Error('pid gone');
+      proc = se.processes[idx];
+      // 批量取坐标：一次 Apple Event，比逐窗口快得多。进程列表若在这几百
+      // 毫秒里变动会让索引错位，但随后的四维坐标匹配自然对不上、记为
+      // failed，不会误移动别人的窗口——匹配本身就是安全网
       positions = proc.windows.position();
       sizes = proc.windows.size();
     } catch (e) {
@@ -170,17 +185,20 @@ function run(argv) {
     matched.sort((a, b) => a.g - b.g);
     for (const pr of matched) {
       const i = pr.i, m = group[pr.g];
+      // 已经在目标位置的窗口不必再写：省一次往返，也省一次多余的重绘
+      if (m.x === m.cx && m.y === m.cy && m.width === m.cw && m.height === m.ch) continue;
       // 关键：用 proc.windows[i] 的 whose 链式引用寻址，绝不调用 windows()
       // 物化——物化出的引用按进程名寻址，同名多进程（如两个 Ghostty 实例）
       // 时会全部解析到第一个进程，窗口就指错了
       const w = proc.windows[i];
       try {
         // 顺序必须是 size → position → size：先挪位置会让大窗悬出屏幕，
-        // 随后的 resize 触发 AppKit 跨屏约束、高度被加上 ~57px（macOS 26 实测）；
-        // 末尾再设一次 size 是为还原路径兜底（贴底放大时首次 size 同样会被钳）
+        // 随后的 resize 触发 AppKit 跨屏约束、高度被加上 ~57px（macOS 26 实测）。
+        // 末尾那次 size 只有放大路径需要（贴底放大时首次 size 同样会被钳）——
+        // 平铺基本都是缩小，无条件补发等于白花一次往返和一次可见跳变
         w.size = [m.width, m.height];
         w.position = [m.x, m.y];
-        w.size = [m.width, m.height];
+        if (m.width > m.cw || m.height > m.ch) w.size = [m.width, m.height];
       } catch (e) { failed.push(m.id); }
     }
   }
